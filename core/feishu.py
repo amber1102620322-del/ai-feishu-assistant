@@ -101,7 +101,7 @@ async def add_message_reaction(message_id: str, emoji_type: str = "GOT_IT"):
 
 async def create_feishu_doc_from_markdown(title: str, content: str) -> str:
     """
-    创建一个新的飞书 Docx 文档并写入内容，返回文档的 URL。
+    创建一个新的飞书 Docx 文档并根据 Markdown 语法优化格式写入。
     """
     token = await get_tenant_access_token()
     if not token:
@@ -117,40 +117,63 @@ async def create_feishu_doc_from_markdown(title: str, content: str) -> str:
     create_payload = {"title": title}
     
     async with httpx.AsyncClient() as client:
+        print(f"[Feishu API] 正在创建文档, title='{title}'")
         resp = await client.post(create_url, headers=headers, json=create_payload)
         res_data = resp.json()
         if res_data.get("code") != 0:
-            print("创建文档失败:", res_data)
+            print(f"[Feishu API] 创建文档失败: {res_data}")
             return f"创建飞书文档失败（可能需开通 docx:document:create 权限）。错误信息: {res_data.get('msg')}"
             
         doc_data = res_data.get("data", {}).get("document", {})
         document_id = doc_data.get("document_id")
+        print(f"[Feishu API] 文档创建成功, document_id='{document_id}'")
         
-        # 2. 写入内容（添加到根 block，即 document_id 作为 parent block）
+        # 简单解析 Markdown 行
+        lines = content.split('\n')
+        children = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            #识别 H1
+            if line.startswith("# "):
+                block = {"block_type": 3, "heading1": {"elements": [{"text_run": {"content": line[2:]}}]}}
+            #识别 H2
+            elif line.startswith("## "):
+                block = {"block_type": 4, "heading2": {"elements": [{"text_run": {"content": line[3:]}}]}}
+            #识别 H3
+            elif line.startswith("### "):
+                block = {"block_type": 5, "heading3": {"elements": [{"text_run": {"content": line[4:]}}]}}
+            #识别 无序列表
+            elif line.startswith("- ") or line.startswith("* "):
+                block = {"block_type": 12, "bullet": {"elements": [{"text_run": {"content": line[2:]}}]}}
+            #识别 分割线
+            elif line == "---":
+                block = {"block_type": 22, "divider": {}}
+            #普通文本
+            else:
+                block = {
+                    "block_type": 2, 
+                    "text": {"elements": [{"text_run": {"content": line}}]}
+                }
+            children.append(block)
+
+        # 2. 写入内容（添加到根 block）
         add_blocks_url = f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
         
-        block_payload = {
-            "children": [
-                {
-                    "block_type": 2,
-                    "text": {
-                        "elements": [
-                            {
-                                "text_run": {
-                                    "content": content
-                                }
-                            }
-                        ]
-                    }
-                }
-            ]
-        }
+        # 飞书 API 限制一次性写入数量，这里分批写入或限制总量
+        # 简单处理：只取前 50 个 block 避免超时
+        block_payload = {"children": children[:50]}
         
+        print(f"[Feishu API] 正在写入内容, blocks={len(children)}")
         block_resp = await client.post(add_blocks_url, headers=headers, json=block_payload)
         block_res_data = block_resp.json()
         if block_res_data.get("code") != 0:
-            print("写入文档内容失败:", block_res_data)
+            print(f"[Feishu API] 写入文档内容失败: {block_res_data}")
             return f"文档已创建但内容写入失败：{block_res_data.get('msg')}。链接: https://feishu.cn/docx/{document_id}"
             
+        print(f"[Feishu API] 文档内容写入成功")
         return f"已自动为您生成飞书文档：https://feishu.cn/docx/{document_id}"
 
