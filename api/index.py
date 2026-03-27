@@ -39,16 +39,16 @@ async def handle_agent_background(chat_id: str, receive_id_type: str, message: s
 
 @app.post("/api/feishu/webhook")
 async def feishu_webhook(request: Request, background_tasks: BackgroundTasks):
-    # 延迟 import，保证 Vercel 冷启动时不触发重型库加载
-    from core.feishu import decrypt_msg, add_message_reaction
     body = await request.json()
+
+    # ⚡ 第一优先级：飞书 Challenge 验证，不依赖任何第三方库，必须在 3 秒内极速返回
+    if body.get("type") == "url_verification":
+        return {"challenge": body.get("challenge")}
+
+    # Challenge 通过后，再延迟加载重型依赖库
+    from core.feishu import decrypt_msg, add_message_reaction
     print(f"\n{'='*50}")
     print(f"[Webhook] 收到请求: {json.dumps(body, ensure_ascii=False)[:500]}")
-    
-    # 飞书初始化的 challenge 验证（明文模式）
-    if body.get("type") == "url_verification":
-        print("[Webhook] Challenge 验证（明文）")
-        return {"challenge": body.get("challenge")}
         
     # 处理加密情况
     if "encrypt" in body:
