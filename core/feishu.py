@@ -128,10 +128,28 @@ async def create_feishu_doc_from_markdown(title: str, content: str) -> str:
         document_id = doc_data.get("document_id")
         print(f"[Feishu API] 文档创建成功, document_id='{document_id}'")
         
-        # 简单解析 Markdown 行
+        # 解析 Markdown 行
+        import re
         lines = content.split('\n')
         children = []
         
+        def _parse_text_to_elements(text: str):
+            """将一行文本中的 **bold** 标记解析为多个 text_run"""
+            # 兼容：用户想去掉 *，我们这里解析 ** 为加粗，并过滤掉单独的 *
+            parts = re.split(r'(\*\*.*?\*\*)', text)
+            elements = []
+            for part in parts:
+                if part.startswith("**") and part.endswith("**"):
+                    bold_text = part[2:-2]
+                    if bold_text:
+                        elements.append({"text_run": {"content": bold_text, "text_element_style": {"bold": True}}})
+                else:
+                    # 去掉单独的 * 符号（通常是模型误生成的）
+                    cleaned_part = part.replace("*", "")
+                    if cleaned_part:
+                        elements.append({"text_run": {"content": cleaned_part}})
+            return elements
+
         for line in lines:
             line = line.strip()
             if not line:
@@ -139,16 +157,21 @@ async def create_feishu_doc_from_markdown(title: str, content: str) -> str:
             
             #识别 H1
             if line.startswith("# "):
-                block = {"block_type": 3, "heading1": {"elements": [{"text_run": {"content": line[2:]}}]}}
+                block = {"block_type": 3, "heading1": {"elements": _parse_text_to_elements(line[2:])}}
             #识别 H2
             elif line.startswith("## "):
-                block = {"block_type": 4, "heading2": {"elements": [{"text_run": {"content": line[3:]}}]}}
+                block = {"block_type": 4, "heading2": {"elements": _parse_text_to_elements(line[3:])}}
             #识别 H3
             elif line.startswith("### "):
-                block = {"block_type": 5, "heading3": {"elements": [{"text_run": {"content": line[4:]}}]}}
-            #识别 无序列表
+                block = {"block_type": 5, "heading3": {"elements": _parse_text_to_elements(line[4:])}}
+            #识别 有序列表
+            elif re.match(r'^\d+\.\s', line):
+                content_part = re.sub(r'^\d+\.\s', '', line)
+                block = {"block_type": 13, "ordered": {"elements": _parse_text_to_elements(content_part)}}
+            #识别 无序列表 (尽管提示词要求不用，但代码保持兼容)
             elif line.startswith("- ") or line.startswith("* "):
-                block = {"block_type": 12, "bullet": {"elements": [{"text_run": {"content": line[2:]}}]}}
+                content_part = line[2:]
+                block = {"block_type": 12, "bullet": {"elements": _parse_text_to_elements(content_part)}}
             #识别 分割线
             elif line == "---":
                 block = {"block_type": 22, "divider": {}}
@@ -156,7 +179,7 @@ async def create_feishu_doc_from_markdown(title: str, content: str) -> str:
             else:
                 block = {
                     "block_type": 2, 
-                    "text": {"elements": [{"text_run": {"content": line}}]}
+                    "text": {"elements": _parse_text_to_elements(line)}
                 }
             children.append(block)
 
@@ -176,4 +199,45 @@ async def create_feishu_doc_from_markdown(title: str, content: str) -> str:
             
         print(f"[Feishu API] 文档内容写入成功")
         return f"已自动为您生成飞书文档：https://feishu.cn/docx/{document_id}"
+
+
+async def upload_file_to_drive(file_path: str, file_name: str) -> str:
+    """
+    将本地文件上传到飞书云文档 (Drive)，返回文件下载/预览链接。
+    """
+    token = await get_tenant_access_token()
+    if not token:
+        return "获取 Token 失败，无法上传文件"
+        
+    file_size = os.path.getsize(file_path)
+    url = "https://open.feishu.cn/open-apis/drive/v1/files/upload_all"
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+    
+    # 飞书 upload_all 接口需要 multipart/form-data
+    files = {
+        "file": (file_name, open(file_path, "rb"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+    }
+    data = {
+        "file_name": file_name,
+        "parent_type": "explorer",
+        "parent_node": "", # 留空代表根目录
+        "size": str(file_size)
+    }
+    
+    async with httpx.AsyncClient() as client:
+        print(f"[Feishu API] 正在上传文件: {file_name}, size={file_size}")
+        # 注意：httpx 处理 files 时会自动设置 boundary
+        resp = await client.post(url, headers=headers, data=data, files=files)
+        res_data = resp.json()
+        
+        if res_data.get("code") != 0:
+            print(f"[Feishu API] 文件上传失败: {res_data}")
+            return f"上传失败：{res_data.get('msg')}"
+            
+        file_token = res_data.get("data", {}).get("file_token")
+        print(f"[Feishu API] 文件上传成功, token='{file_token}'")
+        # 飞书云文档链接格式
+        return f"https://feishu.cn/file/{file_token}"
 

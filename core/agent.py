@@ -75,51 +75,72 @@ async def create_feishu_doc(title: str, content: str) -> str:
     你必须调用此工具，把你的回答和长文本内容直接写成一个单独的飞书文档，
     然后只需要把返回的“飞书文档链接”发给用户即可，切勿在对话框内霸屏长篇大论。
     """
+    print(f"[Agent Tool] 触发创建文档工具: title='{title}'")
     from core.feishu import create_feishu_doc_from_markdown
     return await create_feishu_doc_from_markdown(title, content)
 
-tools = [web_search, fetch_wechat_article, list_pm_skills, read_pm_skill, create_feishu_doc]
+@tool
+async def create_feishu_ppt(title: str, slides_json: str) -> str:
+    """
+    当用户显式要求“做 PPT”、“生成幻灯片”、“制作汇报演示”时调用此工具。
+    slides_json: 必须是一个符合 JSON 格式的数组，每个对象包含 title 和 content 字段。
+    例如: '[{"title": "背景介绍", "content": "1. 痛点分析\\n2. 市场机会"}, {"title": "核心方案", "content": "AI 自动化流程"}]'
+    """
+    import json
+    print(f"[Agent Tool] 触发 PPT 制作工具: title='{title}'")
+    try:
+        # 清洗可能的 Markdown 代码块干扰
+        cleaned_json = slides_json.strip('`').replace('json\n', '').replace('\n', '\\n')
+        # 复杂清洗：处理可能被 LLM 加上引号的嵌套
+        data = json.loads(slides_json)
+    except Exception as e:
+        print(f"[Agent Tool] PPT JSON 解析失败: {e}, Content: {slides_json[:200]}")
+        return f"PPT 内容解析失败，请检查数据格式。错误: {str(e)}"
+    
+    from core.ppt_generator import create_structured_pptx
+    from core.feishu import upload_file_to_drive
+    
+    file_name = f"{title.replace(' ', '_')}.pptx"
+    file_path = f"/tmp/{file_name}"
+    
+    try:
+        create_structured_pptx(title, data, file_path)
+        link = await upload_file_to_drive(file_path, file_name)
+        return f"PPT 已为您精心制作完成！飞书云文档链接如下：{link}"
+    except Exception as e:
+        print(f"[Agent Tool] PPT 生成或上传失败: {e}")
+        return f"PPT 制作过程中出现错误: {str(e)}"
 
-system_prompt = """你是一位专业、高效、务实的互联网产品经理智能助手，服务对象是资深AI产品经理。
-你的职责是帮助用户提升产品工作效率，减少重复劳动，强化思考质量。
+tools = [web_search, fetch_wechat_article, list_pm_skills, read_pm_skill, create_feishu_doc, create_feishu_ppt]
 
-规则：
-1. 回答简洁、结构化、可执行，不空话、不套话。
-2. 输出优先使用列表、要点、序号，避免大段文字。
-3. 涉及需求、功能、方案时，必须包含：场景、目标、功能、验收、风险。
-4. 涉及数据时，给出结论+原因+建议，三步式表达。
-5. 涉及沟通时，提供可直接复制发送的话术。
-6. 不替用户做最终决策，只提供方案、选项、优先级。
-7. 语气专业干练，不情绪化，不冗余。
+# 核心系统提示词
+# 获取 skills 目录中的 PM 技能列表（作为背景知识）
+skills_context = ""
+pm_skills_dir = "/Users/amber/Amber 助手/feishu-agent/pm_skills"
+if os.path.exists(pm_skills_dir):
+    skill_files = os.listdir(pm_skills_dir)
+    skills_context = "\n".join([f"- {f.replace('.md', '')}" for f in skill_files if f.endswith(".md")])
 
-你具备以下能力：
-- 需求梳理与结构化
-- PRD/功能逻辑撰写
-- 流程与交互梳理
-- 数据指标分析与异常解读
-- 项目风险识别
-- 会议纪要与待办提炼
-- 竞品与行业分析
-- 汇报/话术/复盘优化
-- 日程与待办管理
+system_prompt = f"""你是一个顶级的、极具效率的产品经理/业务架构师 (PM/Architect)。
+你现在的宿主平台是飞书。你可以通过各种工具来为用户提供专业服务。
 
-用户会通过飞书与你对话，你需要随时准备：
-- 接收碎片化信息并整理
-- 按指令生成结构化文档
-- 定时推送简报
-- 回答产品相关专业问题
-
-【动态功能指南与强制规范】
-你现在已装备了 "Product-Manager-Skills" 技能库，包含多种顶级产品经理业务框架（例如 user-story, prd-development, prioritization-advisor 等）。
-当你识别到一项具体的 PM 任务时：
-1. 请先调用 `list_pm_skills` 检索相关的专业技能模板。
-2. 再调用 `read_pm_skill` 读取所需技能的具体指导和框架。
-3. 严格遵循该技能文档中的「理念、框架和步骤」，结合用户的实际上下文思考解决方案。
+【核心人设】
+1. 你的回答必须专业、严谨且富有逻辑。
+2. 你熟练掌握以下专业产品经理技能：
+{skills_context}
+3. 严格遵循以上框架和步骤进行思考。
 
 【写作与输出要求】
-当你自动分析语义，发现当前任务是**「写作需求」**（例如写PRD、详细流程梳理、报告总结）时，
-你**必须**调用 `create_feishu_doc(title, content)` 工具把最终内容写入一篇新的飞书文档，
-生成完毕后，你在这个聊天窗口里只要简短地回复文档的链接即可，不要在对话框直接大段输出文本。"""
+1. **去除冗余符号**：在对话框回复和文档内容中，**禁用**使用 `*` 符号作为列表标记（使用 1. 2. 3. 代替）。
+2. **文档与格式**：
+   - 发现写作需求或长文本时，调用 `create_feishu_doc`。
+   - 必须使用有序列表 (1. 2. 3. 2) 进行自动排序。
+   - 允许且建议使用 Markdown 加粗 (`**内容**`) 来增强重点，但内容本身不要带有多余的 `*`。
+3. **PPT 制作**：
+   - 当用户要求做 PPT 时，你必须调用 `create_feishu_ppt` 工具。
+   - 你需要先构建一个专业的幻灯片结构（数组），包含各页标题和精炼的内容，然后作为 JSON 传给工具。
+
+对话窗口内请保持回复简洁，文档/PPT 内容请保持内容详细专业。"""
 
 # 内存记忆，用于多轮对话
 memory = MemorySaver()
