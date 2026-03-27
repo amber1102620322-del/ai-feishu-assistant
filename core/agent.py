@@ -83,24 +83,34 @@ async def create_feishu_doc(title: str, content: str) -> str:
 async def create_feishu_ppt(title: str, slides_json: str) -> str:
     """
     当用户显式要求“做 PPT”、“生成幻灯片”、“制作汇报演示”时调用此工具。
-    slides_json: 必须是一个符合 JSON 格式的数组，每个对象包含 title 和 content 字段。
-    例如: '[{"title": "背景介绍", "content": "1. 痛点分析\\n2. 市场机会"}, {"title": "核心方案", "content": "AI 自动化流程"}]'
+    slides_json: 必须是一个 JSON 格式的数组字符串，每个对象包含 title 和 content。
+    请直接输出纯 JSON 字符串，不要带 ```json 标记。
     """
     import json
+    import re
     print(f"[Agent Tool] 触发 PPT 制作工具: title='{title}'")
+    
+    data = None
     try:
-        # 清洗可能的 Markdown 代码块干扰
-        cleaned_json = slides_json.strip('`').replace('json\n', '').replace('\n', '\\n')
-        # 复杂清洗：处理可能被 LLM 加上引号的嵌套
+        # 1. 尝试直接解析
         data = json.loads(slides_json)
-    except Exception as e:
-        print(f"[Agent Tool] PPT JSON 解析失败: {e}, Content: {slides_json[:200]}")
-        return f"PPT 内容解析失败，请检查数据格式。错误: {str(e)}"
+    except:
+        try:
+            # 2. 尝试剥离 Markdown 代码块
+            cleaned = re.sub(r'```json\s*|\s*```', '', slides_json).strip()
+            data = json.loads(cleaned)
+        except Exception as e:
+            print(f"[Agent Tool] 解析失败: {e}")
+
+    if not data:
+        return "PPT 内容解析失败，请检查工具调用参数是否为标准的 JSON 列表。"
     
     from core.ppt_generator import create_structured_pptx
     from core.feishu import upload_file_to_drive
     
-    file_name = f"{title.replace(' ', '_')}.pptx"
+    # 清理文件名非法字符
+    safe_title = re.sub(r'[\\/:*?"<>|]', '_', title)
+    file_name = f"{safe_title}.pptx"
     file_path = f"/tmp/{file_name}"
     
     try:
@@ -173,7 +183,13 @@ async def process_user_message(user_id: str, message: str) -> str:
         # 懒加载获取 Agent
         agent = _get_agent()
         response = await agent.ainvoke(inputs, config=config)
-        return response["messages"][-1].content
+        reply = response["messages"][-1].content
+        
+        # 根据用户要求，彻底去掉回复中所有的 * 符号
+        if reply:
+            reply = reply.replace("*", "")
+            
+        return reply
     except Exception as e:
         print(f"Agent Error: {e}")
         return "不好意思，处理您的请求时出错了，请稍后再试。"
