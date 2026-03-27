@@ -10,6 +10,7 @@ dependencies = [
     "langchain-community>=0.3.31",
     "langchain-openai>=0.3.35",
     "langgraph>=0.6.11",
+    "lark-oapi>=1.5.3",
     "pycryptodome>=3.23.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
