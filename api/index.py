@@ -4,8 +4,8 @@ import json
 import traceback
 from dotenv import load_dotenv
 
-from core.feishu import decrypt_msg, send_feishu_message, add_message_reaction
-from core.agent import process_user_message
+# 注意：不在模块顶部 import 重型库，避免 Vercel 冷启动超时
+# 这些 import 全部延迟到具体函数内部进行
 
 load_dotenv()
 
@@ -18,6 +18,9 @@ async def handle_agent_background(chat_id: str, receive_id_type: str, message: s
     """
     后台任务：调用 Agent 并发送结果给用户或群组
     """
+    # 延迟 import 重型库，避免影响冷启动速度
+    from core.feishu import send_feishu_message
+    from core.agent import process_user_message
     try:
         print(f"[Agent] 开始处理消息: {message}")
         reply = await process_user_message(chat_id, message)
@@ -36,6 +39,8 @@ async def handle_agent_background(chat_id: str, receive_id_type: str, message: s
 
 @app.post("/api/feishu/webhook")
 async def feishu_webhook(request: Request, background_tasks: BackgroundTasks):
+    # 延迟 import，保证 Vercel 冷启动时不触发重型库加载
+    from core.feishu import decrypt_msg, add_message_reaction
     body = await request.json()
     print(f"\n{'='*50}")
     print(f"[Webhook] 收到请求: {json.dumps(body, ensure_ascii=False)[:500]}")
